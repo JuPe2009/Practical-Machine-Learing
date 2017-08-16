@@ -1,0 +1,185 @@
+---
+title: "Prediction Assignment Writeup"
+output:
+  html_document: default
+  pdf_document: default
+---
+```{r setup, include=FALSE, results='asis'}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(randomForest)
+library(gbm)
+library(survival)
+library(splines)
+library(parallel)
+library(plyr)
+library(MASS)
+library(rpart)
+library(kernlab)
+library(xtable)
+```
+# Overview
+
+This analysis has been done for the project assigment of the Practical Machine Learning course of John Hopkins Data Science program at Coursera. This is the background of the assigment from Coursera:
+
+"Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways."
+
+# Load, explore and clean data
+
+## Load Weight Lifting Exercise Dataset
+
+The training data for this project are available here: 
+
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv>
+
+The test data are available here:
+
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>
+
+The data for this project come from this source: <http://groupware.les.inf.puc-rio.br/har>. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment. 
+
+```{r Load Data, echo=TRUE, results='hide', cache=TRUE}
+training.url = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testing.url = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+training.file = "pml-training.csv"
+testing.file = "pml-testing.csv"
+
+download.file(training.url, training.file)
+download.file(testing.url, testing.file)
+
+training.data = read.csv(training.file, na.strings = c("NA","","#DIV/0!"))
+validation.data = read.csv(testing.file, na.strings = c("NA","","#DIV/0!"))
+```
+
+There are 19622 observations and 160 variables in the training data set, and 20 observations in the testing data set. The testing one will be used for applying the machine learning algorithm selected in our analysis to the 20 observations and respond the questions of the course project prediction quiz.
+
+According to the paper Qualitative Activity Recognition of Weight Lifting Exercises link [http://web.archive.org/web/20170809020213/http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf] the measurements stored in the data set for each body part (arm, belt, glove and dumbbell) are Euler angles (roll, pitch and yaw) as well as the raw accelerometer, gyroscope and magnetometer readings. For the Euler angles of each of the four sensors we calculated eight features: mean, variance, standard deviation, max, min, amplitude, kurtosis and skewness, generating in total 96 derived feature sets. This is measured over 6 participants in time windows from 0.5 to 2.5 seconds 
+
+## Data Cleaning & Exploratory Data Analysis
+
+Observing the data we see the calculated features for each window variables are empty in the majority of the observations. Checking the validation data set those variables are empty, we will not need them for our final prediction and we will only have to predict based on observations at one particular time window. Addtionally the first variable of the set is just the row number of the observation and we can omit it.
+
+Therefore we have done the following actions to clean the testing data set:
+
+1. Remove X variable.
+2. Remove variables with more than 90% NAs.
+3. Look for near zero variance variables and remove then.
+
+After performing these actions, we will keep 58 variables for our analysis. 
+
+In the last step we have partitioned the data set in a training data set having 75% of the observations and in a testing set with 25% of the observations. We will estimate the out of sample error of our predictor using these sets.
+
+```{r EDA, include=TRUE, cache=TRUE}
+training.data1 <- training.data[,-1]
+near.zero.var = nearZeroVar(training.data1, freqCut = 95/5, uniqueCut = 10)
+training.data2 <- training.data1[,-near.zero.var]
+na.colnames <- sapply(names(training.data2), function(x) (sum(is.na(training.data2[,x]))/nrow(training.data2)) >= 0.90)
+training.data3 <- training.data2[,names(na.colnames)[na.colnames==FALSE]]
+set.seed(233)
+inTrain <- createDataPartition(training.data3$classe, p=0.75)[[1]]
+training.final.data <- training.data3[inTrain,]
+testing.final.data <- training.data3[-inTrain,]
+```
+
+# Model Evaluation
+
+Initially we have tested 5 differents model algorithms to see which of them calculates the best out of sample accuracy. The algorithms to be tested are:
+
+1. Random Forest.
+2. Stochastic Gradient Boosting.
+3. Linear Discriminant Analysis.
+4. CART.
+5. Support Vector Machines with Radial Basis Function Kernel.
+
+No preprocessing has been done, and we have included cross validation in all the tests.
+
+```{r prediction models, cache=TRUE}
+set.seed(34543)
+fitControl <- trainControl(method="cv", number=3)
+```
+
+## Random Forest
+
+```{r rf, cache=TRUE, results='hide'}
+#Random Forest rf
+mdl_rf <- train(classe ~ ., data=training.final.data, method="rf", trControl = fitControl)
+prediction_rf <- predict(mdl_rf, testing.final.data)
+```
+
+## Stochastic Gradient Boosting
+
+```{r gbm, cache=TRUE, results='hide'}
+#Stochastic Gradient Boosting gbm
+mdl_gbm <- train(classe ~ ., data=training.final.data, method="gbm", trControl = fitControl, verbose=FALSE)
+prediction_gbm <- predict(mdl_gbm, testing.final.data)
+```
+
+## Linear Discriminant Analysis
+
+```{r lda, cache=TRUE, results='hide'}
+#Linear Discriminant Analysis lda
+mdl_lda <- train(classe ~ ., data=training.final.data, method="lda", trControl = fitControl)
+prediction_lda <- predict(mdl_lda, testing.final.data)
+```
+
+## CART 
+
+```{r rpart, cache=TRUE, results='hide'}
+#CART rpart
+mdl_rpart <- train(classe ~ ., data=training.final.data, method="rpart", trControl = fitControl)
+prediction_rpart <- predict(mdl_rpart, testing.final.data)
+```
+
+## Support Vector Machines
+
+```{r svm, cache=TRUE, results='hide'}
+#Support Vector Machines with Radial Basis Function Kernel svmRadial
+mdl_svmRadial <- train(classe ~ ., data=training.final.data, method="svmRadial", trControl = fitControl)
+prediction_svmRadial <- predict(mdl_svmRadial, testing.final.data)
+```
+
+## Model Evaluation Accuracy
+
+In below table we see the accuracy from confusion matrix for all the models tested. The best accuracy is provided by the Random Forest model and the Gradient Boosting model, both of them with more than 0.99 accuracy. As Random Forest one is more accurate we have selected it for predicting the responses for the final quiz.
+
+```{r accuracy, cache=TRUE, results="asis", echo=FALSE}
+AccuracyTable <- data.frame(Model = c("Random Forest","Stochastic Gradient Boosting","Linear Discrimination Analysis","CART","Support Vector Machines with Radial Basis Function Kernel"), Accurary = rbind(confusionMatrix(prediction_rf, testing.final.data$classe)$overall[1],confusionMatrix(prediction_gbm, testing.final.data$classe)$overall[1],confusionMatrix(prediction_lda, testing.final.data$classe)$overall[1],confusionMatrix(prediction_rpart, testing.final.data$classe)$overall[1],confusionMatrix(prediction_svmRadial, testing.final.data$classe)$overall[1]))
+
+AccuracyTable <- AccuracyTable[order(AccuracyTable$Accuracy, decreasing=TRUE),]
+print(xtable(AccuracyTable, digits=7), type="html")
+```
+
+# Model selected
+
+Below is shown the summary for Random Forest selected model:
+
+```{r final_model_selection, include=TRUE, cache=TRUE}
+mdl_rf
+ggplot(mdl_rf)
+mdl_rf$finalModel
+varImp(mdl_rf)
+varImpPlot(mdl_rf$finalModel)
+confusionMatrix(prediction_rf, testing.final.data$classe)
+```
+
+# Summary
+
+The out of sample error is very low for the random forest model selected (less than 0,01%), therefore we are fine with this model for the purpose of predicting results for random selected observations. 
+
+# Prediction Quiz Results
+
+The last step of the project assigment is predicting the results for the validation data set. The results are shown in below table.
+
+```{r quizresults, include=TRUE, results="asis"}
+quiz.results <- data.frame(ProblemId=validation.data$problem_id, Prediction=predict(mdl_rf, validation.data))
+print(xtable(quiz.results), type="html")
+```
+
+# References
+
+1. Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013. 
+
+Read more: <http://groupware.les.inf.puc-rio.br/har#weight_lifting_exercises#ixzz4plRCbIyF>
+
+2. The Elements of Statistical Learning (Second Edition, 12th printing), Trevor Hastie, Robert Tibshirani, Jerome Friedman. Springer(2017). ISBN: 978-0-387-84858-7
+
